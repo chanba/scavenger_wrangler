@@ -1,23 +1,25 @@
 # Midnight Scavenger Consolidation — v0.1
 
-**Goal:** consolidate Scavenger Mine allocations from many mining wallets into a **single Cardano address** using the official `donate_to` API endpoint.  
+## Goal:
 
-**Why?** Most solutions depend on wallet integration or otherwise. This only requires your 15 or 24 word mnemonic. 
+Consolidate Scavenger Mine allocations from many mining wallets into a **single Cardano address** using the official `donate_to` API endpoint.  
 
-Since the mnemonics used in the scavenger hunt are throwaway, why not use that to derive the entire chain?
+**Why?** Most solutions depend on wallet integration or otherwise. This tool only requires your 15 or 24 word mnemonic and a destination address. 
 
-Well, there are a few dependencies, the most important being:
-- Python 3.10 or something newer, maybe?
-- Cardano-addresses: https://github.com/IntersectMBO/cardano-addresses
-- Cardano-signer: https://github.com/gitmachtl/cardano-signer
+We consider the mnemonics used in the scavenger hunt as throwaway, so why not use that to derive the entire chain?
+
+This tool is not for everybody, but it filled my specific need.
 
 ## Requirements
 
 - **Python** 3.8+
 - `pip install requests`
 - **cardano‑signer** in `PATH` (for key derivation & CIP‑8 signing)
+  - Get it here: https://github.com/gitmachtl/cardano-signer
 - **cardano‑address** in `PATH` (if you want the tool to **derive** `addr1…` from your mnemonic)
-
+  - Get it here: https://github.com/IntersectMBO/cardano-addresses
+ 
+    
 > **Check your path**
 > ```bash
 > which cardano-signer
@@ -39,6 +41,8 @@ Internally, we construct an enterprise address from the **payment xpub** and the
 ## Quick Start
 
 ### 1) Derive addresses only (no signing, no API calls)
+
+You can use this to verify that the addresses we're going to work with match your challenges. It's also fun!
 
 ```bash
 python3 consolidate_scavenger.py \
@@ -62,6 +66,8 @@ python3 consolidate_scavenger.py \
 
 ### 2) Dry‑run a consolidation (signatures only)
 
+Use this to check your chain. This does not send anything but it does create the signatures in the log file, so that's nice.
+
 ```bash
 python3 consolidate_scavenger.py \
   --mnemonic "your 24 or 15 words ..." \
@@ -71,6 +77,9 @@ python3 consolidate_scavenger.py \
 ```
 
 **CSV format (header required):**
+
+This is if you for whatever reason used random addresses from a wallet. I dunno, could be useful.
+
 ```csv
 index,external,address
 0,1,addr1q...
@@ -79,6 +88,8 @@ index,external,address
 > The `external` column is **ignored** in this simplified tool (we always treat donors as external chain).
 
 ### 3) Live consolidation
+
+If you have an enormous amount of wallets, there's some built in rate limiting protection. 
 
 ```bash
 python3 consolidate_scavenger.py \
