@@ -48,10 +48,7 @@ You can use this to verify that the addresses we're going to work with match you
 python3 consolidate_scavenger.py \
   --mnemonic "your 24 or 15 words ..." \
   --numaddresses 25 \
-  --account 0 \
-  --network-tag mainnet \
   --derive-address-only \
-  --out-dir consolidate-logs
 ```
 
 **Output**
@@ -73,7 +70,6 @@ python3 consolidate_scavenger.py \
   --mnemonic "your 24 or 15 words ..." \
   --destination-addr "addr1qDESTINATION..." \
   --dry-run \
-  --out-dir consolidate-logs
 ```
 
 **CSV format (header required):**
@@ -98,7 +94,6 @@ python3 consolidate_scavenger.py \
   --per-request-delay 1.0 \
   --max429 6 \
   --backoff-base 5.0 \
-  --out-dir consolidate-logs
 ```
 
 **What happens**
