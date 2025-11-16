@@ -21,6 +21,13 @@ It supports three main modes:
   3) Derive-only:
        just derive addresses and write them out; no signing, no API calls.
 
+It also supports an optional derivation variant:
+
+  --nocturne-compat:
+      derive addresses using account=index, index=0, i.e.
+      payment: m/1852'/1815'/(ACCOUNT+index)'/0/0
+      stake:   m/1852'/1815'/(ACCOUNT+index)'/2/0
+
 Inputs
 ------
 You can supply donors from:
@@ -35,11 +42,11 @@ You can supply donors from:
    - "external" column is ignored; ROLE=0 (external) is assumed.
 
 2) Derivation (CIP-1852):
-   --numaddresses N   (derive N addresses on ROLE=0)
+   --numaddresses N   (derive N addresses)
    --account 0        (CIP-1852 account index, default 0)
    --network-tag mainnet | testnet
 
-Derivation path (CIP-1852):
+Standard derivation path (CIP-1852):
   m / 1852' / 1815' / ACCOUNT' / ROLE / INDEX
 with ROLE fixed to 0 (external) in this tool.
 
@@ -57,6 +64,11 @@ Flags
 
 --derive-address-only
     Derive addresses only; no signing and no API calls.
+
+--nocturne-compat
+    Derive addresses using account=index, index=0 (account-per-address)
+    for external compatibility with tools that do this. Only affects
+    on-the-fly derivation (--numaddresses); CSV behavior is unchanged.
 
 Outputs (per run folder)
 ------------------------
@@ -111,15 +123,17 @@ DEFAULT_API_URL = "https://scavenger.prod.gd.midnighttge.io"
 @dataclass
 class DonorRow:
     line_no: int
+    account: int   # CIP-1852 account index
     index: int
-    role: int   # always 0 in this tool
-    path: str   # 1852H/1815H/{acct}H/{role}/{index}
+    role: int      # always 0 in this tool
+    path: str      # 1852H/1815H/{acct}H/{role}/{index}
     address: str
 
 
 @dataclass
 class DonationResult:
     line_no: int
+    account: int
     index: int
     role: int
     path: str
@@ -248,10 +262,25 @@ def validate_destination_address(addr: str, network_tag: str) -> None:
 
 # ------------------------ derivation & signing ------------------------
 
-def derive_addresses_external(mnemonic: str, account: int, n: int, network_tag: str) -> List[DonorRow]:
+def derive_addresses_external(
+    mnemonic: str,
+    base_account: int,
+    n: int,
+    network_tag: str,
+    nocturne_compat: bool,
+) -> List[DonorRow]:
     """
-    Derive the first N external (ROLE=0) base addresses using cardano-address.
-    Returns a list of DonorRow with index, role=0, path, and address.
+    Derive external base addresses using cardano-address.
+
+    Standard mode:
+      account = base_account (fixed)
+      payment: m/1852H/1815H/accountH/0/<index>
+      stake:   m/1852H/1815H/accountH/2/0
+
+    Nocturne-compat mode:
+      account_i = base_account + i
+      payment:   m/1852H/1815H/account_iH/0/0
+      stake:     m/1852H/1815H/account_iH/2/0
     """
     ensure_binary("cardano-address")
 
@@ -261,56 +290,111 @@ def derive_addresses_external(mnemonic: str, account: int, n: int, network_tag: 
         raise RuntimeError(f"cardano-address key from-recovery-phrase failed: {proc.stderr.strip()}")
     root_xprv = proc.stdout.strip()
 
-    # account xprv
-    proc = run(["cardano-address", "key", "child", f"1852H/1815H/{account}H"], input_text=root_xprv)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cardano-address key child account failed: {proc.stderr.strip()}")
-    acct_xprv = proc.stdout.strip()
-
-    # stake xpub (2/0)
-    proc = run(["cardano-address", "key", "child", "2/0"], input_text=acct_xprv)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cardano-address key child stake failed: {proc.stderr.strip()}")
-    stake_xprv = proc.stdout.strip()
-
-    proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=stake_xprv)
-    if proc.returncode != 0:
-        raise RuntimeError(f"cardano-address key public (stake) failed: {proc.stderr.strip()}")
-    stake_xpub = proc.stdout.strip()
-
     donors: List[DonorRow] = []
-    for i in range(n):
-        role = 0  # external only
-        # payment xprv at role/index
-        proc = run(["cardano-address", "key", "child", f"{role}/{i}"], input_text=acct_xprv)
-        if proc.returncode != 0:
-            raise RuntimeError(f"cardano-address key child payment {role}/{i} failed: {proc.stderr.strip()}")
-        pay_xprv = proc.stdout.strip()
 
-        proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=pay_xprv)
+    if not nocturne_compat:
+        # Standard mode: one account, multiple indices
+        proc = run(["cardano-address", "key", "child", f"1852H/1815H/{base_account}H"], input_text=root_xprv)
         if proc.returncode != 0:
-            raise RuntimeError(f"cardano-address key public (payment {i}) failed: {proc.stderr.strip()}")
-        pay_xpub = proc.stdout.strip()
+            raise RuntimeError(f"cardano-address key child account failed: {proc.stderr.strip()}")
+        acct_xprv = proc.stdout.strip()
 
-        # enterprise payment address
-        proc = run(["cardano-address", "address", "payment", "--network-tag", network_tag], input_text=pay_xpub)
+        # stake xpub (2/0)
+        proc = run(["cardano-address", "key", "child", "2/0"], input_text=acct_xprv)
         if proc.returncode != 0:
-            raise RuntimeError(f"cardano-address address payment failed for index {i}: {proc.stderr.strip()}")
-        enterprise_addr = proc.stdout.strip()
+            raise RuntimeError(f"cardano-address key child stake failed: {proc.stderr.strip()}")
+        stake_xprv = proc.stdout.strip()
 
-        # add delegation to stake_xpub -> base addr1...
-        proc = run(["cardano-address", "address", "delegation", stake_xpub], input_text=enterprise_addr)
+        proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=stake_xprv)
         if proc.returncode != 0:
-            raise RuntimeError(f"cardano-address address delegation failed for index {i}: {proc.stderr.strip()}")
-        base_addr = proc.stdout.strip()
+            raise RuntimeError(f"cardano-address key public (stake) failed: {proc.stderr.strip()}")
+        stake_xpub = proc.stdout.strip()
 
-        donors.append(DonorRow(
-            line_no=-1,
-            index=i,
-            role=role,
-            path=f"1852H/1815H/{account}H/{role}/{i}",
-            address=base_addr,
-        ))
+        for i in range(n):
+            role = 0  # external only
+            # payment xprv at role/index
+            proc = run(["cardano-address", "key", "child", f"{role}/{i}"], input_text=acct_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key child payment {role}/{i} failed: {proc.stderr.strip()}")
+            pay_xprv = proc.stdout.strip()
+
+            proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=pay_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key public (payment {i}) failed: {proc.stderr.strip()}")
+            pay_xpub = proc.stdout.strip()
+
+            # enterprise payment address
+            proc = run(["cardano-address", "address", "payment", "--network-tag", network_tag], input_text=pay_xpub)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address address payment failed for index {i}: {proc.stderr.strip()}")
+            enterprise_addr = proc.stdout.strip()
+
+            # add delegation to stake_xpub -> base addr1...
+            proc = run(["cardano-address", "address", "delegation", stake_xpub], input_text=enterprise_addr)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address address delegation failed for index {i}: {proc.stderr.strip()}")
+            base_addr = proc.stdout.strip()
+
+            donors.append(DonorRow(
+                line_no=-1,
+                account=base_account,
+                index=i,
+                role=role,
+                path=f"1852H/1815H/{base_account}H/{role}/{i}",
+                address=base_addr,
+            ))
+
+    else:
+        # Nocturne compat: account = base_account + i, index=0
+        for i in range(n):
+            account_i = base_account + i
+
+            proc = run(["cardano-address", "key", "child", f"1852H/1815H/{account_i}H"], input_text=root_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key child account {account_i} failed: {proc.stderr.strip()}")
+            acct_xprv = proc.stdout.strip()
+
+            # stake xpub (2/0) per account
+            proc = run(["cardano-address", "key", "child", "2/0"], input_text=acct_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key child stake for account {account_i} failed: {proc.stderr.strip()}")
+            stake_xprv = proc.stdout.strip()
+
+            proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=stake_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key public (stake, account {account_i}) failed: {proc.stderr.strip()}")
+            stake_xpub = proc.stdout.strip()
+
+            role = 0
+            idx = 0  # fixed index under each account
+            proc = run(["cardano-address", "key", "child", f"{role}/{idx}"], input_text=acct_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key child payment {role}/{idx} for account {account_i} failed: {proc.stderr.strip()}")
+            pay_xprv = proc.stdout.strip()
+
+            proc = run(["cardano-address", "key", "public", "--with-chain-code"], input_text=pay_xprv)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address key public (payment, account {account_i}) failed: {proc.stderr.strip()}")
+            pay_xpub = proc.stdout.strip()
+
+            proc = run(["cardano-address", "address", "payment", "--network-tag", network_tag], input_text=pay_xpub)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address address payment failed for account {account_i}: {proc.stderr.strip()}")
+            enterprise_addr = proc.stdout.strip()
+
+            proc = run(["cardano-address", "address", "delegation", stake_xpub], input_text=enterprise_addr)
+            if proc.returncode != 0:
+                raise RuntimeError(f"cardano-address address delegation failed for account {account_i}: {proc.stderr.strip()}")
+            base_addr = proc.stdout.strip()
+
+            donors.append(DonorRow(
+                line_no=-1,
+                account=account_i,
+                index=idx,
+                role=role,
+                path=f"1852H/1815H/{account_i}H/{role}/{idx}",
+                address=base_addr,
+            ))
 
     return donors
 
@@ -336,6 +420,7 @@ def load_csv(path: Path, account: int) -> List[DonorRow]:
             role = 0  # ignore CSV "external"; always external in this tool
             rows.append(DonorRow(
                 line_no=line_no,
+                account=account,
                 index=idx,
                 role=role,
                 path=f"1852H/1815H/{account}H/{role}/{idx}",
@@ -408,7 +493,7 @@ def parse_args() -> argparse.Namespace:
     # Derive-only mode
     ap.add_argument(
         "--derive-address-only", action="store_true",
-        help="Only derive external addresses (ROLE=0) and write artifacts. No signing, no API calls. Requires --numaddresses."
+        help="Only derive external addresses and write artifacts. No signing, no API calls. Requires --numaddresses."
     )
 
     ap.add_argument("--destination-addr", help="Recipient addr1... (required unless --unassign or --derive-address-only)")
@@ -416,10 +501,14 @@ def parse_args() -> argparse.Namespace:
                     help="Undo consolidation by assigning each donor address to itself (self-assignment per row). "
                          "If set, --destination-addr is ignored.")
     ap.add_argument("--csv", help="CSV with columns: index,external,address (external is ignored)")
-    ap.add_argument("--numaddresses", type=int, default=0, help="If >0, derive this many external addresses (ROLE=0)")
+    ap.add_argument("--numaddresses", type=int, default=0, help="If >0, derive this many external addresses")
     ap.add_argument("--account", type=int, default=0, help="HD account index (default: 0)")
     ap.add_argument("--network-tag", choices=["mainnet", "testnet"], default="mainnet",
                     help="For address derivation with cardano-address (default: mainnet)")
+
+    ap.add_argument("--nocturne-compat", action="store_true",
+                    help="Derive addresses as account=index, index=0 (account-per-address). "
+                         "Only affects on-the-fly derivation (--numaddresses).")
 
     ap.add_argument("--api-url", default=DEFAULT_API_URL, help="Scavenger API base URL")
     ap.add_argument("--user-agent", default=DEFAULT_UA, help="User-Agent header for HTTP requests")
@@ -461,25 +550,35 @@ def main() -> None:
             print("ERROR: --derive-address-only requires --numaddresses > 0", file=sys.stderr)
             sys.exit(2)
 
-        donors = derive_addresses_external(mnemonic, args.account, args.numaddresses, args.network_tag)
+        donors = derive_addresses_external(
+            mnemonic,
+            args.account,
+            args.numaddresses,
+            args.network_tag,
+            nocturne_compat=args.nocturne_compat,
+        )
 
         # Write text + CSV artifacts inside the run folder
         with derived_txt.open("w", encoding="utf-8") as ftxt, derived_csv.open("w", newline="", encoding="utf-8") as fcsv:
             w = csv.writer(fcsv)
-            w.writerow(["index", "path", "address"])
-            for d in donors:
+            w.writerow(["index", "account", "path", "address"])
+            for i, d in enumerate(donors):
                 ftxt.write(d.address + "\n")
-                w.writerow([d.index, d.path, d.address])
+                w.writerow([i, d.account, d.path, d.address])
 
         # Derive-only job summary
         lines: List[str] = []
         lines.append("=== Scavenger Derive-Only Job Summary ===")
         lines.append(f"run_folder     : {run_dir.name}")
-        lines.append(f"account        : {args.account}")
+        lines.append(f"account_start  : {args.account}")
+        lines.append(f"nocturne_compat: {args.nocturne_compat}")
         lines.append(f"network-tag    : {args.network_tag}")
         lines.append(f"count          : {len(donors)}")
         lines.append("")
-        lines.append(f"Derivation: m/1852H/1815H/{args.account}H/0/<index> (external chain)")
+        if args.nocturne_compat:
+            lines.append(f"Derivation: m/1852H/1815H/(account_start + i)H/0/0 (account-per-address, external chain)")
+        else:
+            lines.append(f"Derivation: m/1852H/1815H/{args.account}H/0/<index> (external chain)")
         lines.append("Artifacts:")
         lines.append(f"- derived_addresses.txt")
         lines.append(f"- derived_addresses.csv")
@@ -521,7 +620,13 @@ def main() -> None:
     if args.csv:
         donors.extend(load_csv(Path(args.csv), args.account))
     if args.numaddresses > 0:
-        donors.extend(derive_addresses_external(mnemonic, args.account, args.numaddresses, args.network_tag))
+        donors.extend(derive_addresses_external(
+            mnemonic,
+            args.account,
+            args.numaddresses,
+            args.network_tag,
+            nocturne_compat=args.nocturne_compat,
+        ))
 
     if not donors:
         print("Nothing to do: provide --csv and/or --numaddresses", file=sys.stderr)
@@ -534,7 +639,11 @@ def main() -> None:
 
     print("Scavenger Wrangler")
     print(f"API URL       : {args.api_url}")
-    print(f"Account       : {args.account} (ROLE=0 external)")
+    if args.nocturne_compat:
+        acc_end = args.account + max((d.account for d in donors), default=args.account) - args.account
+        print(f"Accounts      : {args.account}..{acc_end} (Nocturne compat, account-per-address, ROLE=0 external)")
+    else:
+        print(f"Account       : {args.account} (ROLE=0 external)")
     print(f"Donors total  : {len(donors)}")
     print(f"Run directory : {run_dir}")
     print(f"Mode          : {'DRY-RUN' if args.dry_run else 'LIVE'}")
@@ -547,7 +656,7 @@ def main() -> None:
     # Writers
     sig_f = signatures_csv_path.open("w", newline="", encoding="utf-8")
     sig_w = csv.writer(sig_f)
-    sig_w.writerow(["index", "path", "address", "destination", "signature_hex"])
+    sig_w.writerow(["account", "index", "path", "address", "destination", "signature_hex"])
 
     results: List[DonationResult] = []
 
@@ -561,7 +670,7 @@ def main() -> None:
             validate_destination_address(dest_for_row, args.network_tag)
 
             print("-" * 72)
-            print(f"index={row.index} ROLE={row.role} path={row.path}")
+            print(f"account={row.account} index={row.index} ROLE={row.role} path={row.path}")
             print(f"  donor: {row.address}")
             print(f"  dest : {dest_for_row}")
 
@@ -575,13 +684,14 @@ def main() -> None:
             with tempfile.TemporaryDirectory(prefix="donate-to-") as tmpdir:
                 tmp = Path(tmpdir)
                 try:
-                    skey_path = derive_skey(mnemonic, args.account, row.role, row.index, tmp)
+                    skey_path = derive_skey(mnemonic, row.account, row.role, row.index, tmp)
                     signature_hex, _pubkey_hex = cip8_sign(skey_path, row.address, dest_for_row)
                 except Exception as e:
                     print(f"  ERROR during derive/sign: {e}")
                     status_class = "sign_error"
                     result = DonationResult(
                         line_no=row.line_no,
+                        account=row.account,
                         index=row.index,
                         role=row.role,
                         path=row.path,
@@ -600,13 +710,14 @@ def main() -> None:
                     continue
 
                 # Log signature immediately
-                sig_w.writerow([row.index, row.path, row.address, dest_for_row, signature_hex])
+                sig_w.writerow([row.account, row.index, row.path, row.address, dest_for_row, signature_hex])
                 sig_f.flush()
 
                 if args.dry_run:
                     print("  dry-run: not calling API; signature logged.")
                     result = DonationResult(
                         line_no=row.line_no,
+                        account=row.account,
                         index=row.index,
                         role=row.role,
                         path=row.path,
@@ -684,6 +795,7 @@ def main() -> None:
 
                 result = DonationResult(
                     line_no=row.line_no,
+                    account=row.account,
                     index=row.index,
                     role=row.role,
                     path=row.path,
@@ -708,11 +820,12 @@ def main() -> None:
     # Write summary.csv
     with summary_csv_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["index", "path", "address_from", "address_to", "http_code",
+        w.writerow(["account", "index", "path", "address_from", "address_to", "http_code",
                     "status_class", "donation_id", "solutions_consolidated"])
         for r in results:
             solutions_val = r.solutions_consolidated if r.solutions_consolidated is not None else ""
             w.writerow([
+                r.account,
                 r.index,
                 r.path,
                 r.address,
@@ -735,6 +848,7 @@ def main() -> None:
     else:
         lines.append(f"destination    : {dest_addr}")
     lines.append(f"mode           : {'DRY-RUN' if args.dry_run else 'LIVE'}")
+    lines.append(f"nocturne_compat: {args.nocturne_compat}")
     lines.append(f"total_donors   : {len(results)}")
     lines.append("")
     lines.append("Results:")
