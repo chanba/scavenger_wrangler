@@ -17,6 +17,10 @@ It is a **slim, scriptable utility** intended for advanced users who understand 
 Most of the tools I found depended on a wallet connection or other silliness. Since the mnemonics used for the scavenger hunt in most cases
 are considered throwaway accounts, we can use it to derive the addresses and perform the entire operation in one fell swoop.
 
+## Current Issue
+
+This script does not worki for the Nocturne Scavenger Miner Mnemonic. Stay tuned.
+
 ---
 
 ## Requirements
