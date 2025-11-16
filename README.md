@@ -119,6 +119,14 @@ consolidate-logs/
     summary.csv        # index, path, address_from, address_to, code, status_class, donation_id, solutions_consolidated
     signatures.csv     # index, path, address, destination, signature_hex
     job_summary.txt    # human-readable checklist
+
+For derived address run:
+
+consolidate-logs/
+  run-YYYYMMDDTHHMMSSZ/
+    derived_addresses.txt    # one addr per line
+    derived_addresses.csv    # index, path, address
+    job_summary.txt          # derive-only summary
 ```
 
 ### `job_summary.txt`
