@@ -74,6 +74,7 @@ python3 consolidate_scavenger.py \
 
 **CSV format (header required):**
 
+By adding the '--csv' option you can use a list of addresses instead of the derived list.
 This is if you for whatever reason used random addresses from a wallet. I dunno, could be useful.
 
 ```csv
@@ -85,7 +86,9 @@ index,external,address
 
 ### 3) Live consolidation
 
-If you have an enormous amount of wallets, there's some built in rate limiting protection. 
+This is what you came here for, really. Note that if you have an enormous amount of wallets, there's some built in rate limiting protection. 
+
+It's pretty straightforward:
 
 ```bash
 python3 consolidate_scavenger.py \
